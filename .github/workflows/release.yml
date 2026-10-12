@@ -1,0 +1,119 @@
+# Builds Curse of War for the Asciiverse catalog: one archive per target,
+# named <id>-<target>.tar.gz, plus a SHA256SUMS file, attached to a GitHub
+# release (hub/catalog/SCHEMA.md, release.source = "github"). Runs on a
+# pushed tag, or by hand for an existing tag.
+#
+# Linux builds run in Alpine and link ncurses statically, so the binaries
+# carry the -musl triple that av looks for first and need no libncurses on
+# the player's machine. Alpine's ncurses searches /etc/terminfo,
+# /usr/share/terminfo, /lib/terminfo and /usr/lib/terminfo, which covers
+# the common distributions. macOS links the system ncurses, which every Mac
+# has. No Windows build: the ncurses frontend relies on SIGALRM, pause()
+# and non-blocking reads from stdin, none of which exist in a Windows
+# console.
+
+name: release
+
+on:
+  push:
+    tags: ["*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "existing tag to build and release"
+        required: true
+
+env:
+  ID: curse-of-war
+  BIN: curseofwar
+  TAG: ${{ inputs.tag || github.ref_name }}
+
+permissions:
+  contents: write
+
+jobs:
+  linux:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: x86_64-unknown-linux-musl, runner: ubuntu-24.04 }
+          - { target: aarch64-unknown-linux-musl, runner: ubuntu-24.04-arm }
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+
+      - name: Build
+        run: |
+          docker run --rm -v "$PWD":/src -w /src alpine:3.22 sh -c '
+            apk add --no-cache build-base ncurses-dev ncurses-static &&
+            make CFLAGS=-O2 LDFLAGS="-static -s"'
+          file "$BIN"
+
+      - name: Package
+        run: |
+          # the binary sits at the top of the archive, where av looks for it
+          mkdir -p stage dist
+          cp "$BIN" LICENSE README stage/
+          tar -czf "dist/$ID-${{ matrix.target }}.tar.gz" -C stage .
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: dist/*
+
+  macos:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: x86_64-apple-darwin, arch: x86_64 }
+          - { target: aarch64-apple-darwin, arch: arm64 }
+    runs-on: macos-14
+    env:
+      MACOSX_DEPLOYMENT_TARGET: "11.0"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+
+      - name: Build
+        run: |
+          make CC=cc CFLAGS="-O2 -arch ${{ matrix.arch }}" LDFLAGS="-arch ${{ matrix.arch }}"
+          strip "$BIN"
+          file "$BIN"
+
+      - name: Package
+        run: |
+          mkdir -p stage dist
+          cp "$BIN" LICENSE README stage/
+          tar -czf "dist/$ID-${{ matrix.target }}.tar.gz" -C stage .
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: dist/*
+
+  release:
+    needs: [linux, macos]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Checksums
+        working-directory: dist
+        run: sha256sum * > SHA256SUMS && cat SHA256SUMS
+
+      - name: Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1 \
+            || gh release create "$TAG" -R "$GITHUB_REPOSITORY" --title "Curse of War $TAG" \
+                 --notes "Curse of War $TAG from github.com/a-nikolaev/curseofwar, built for the Asciiverse catalog."
+          gh release upload "$TAG" dist/* -R "$GITHUB_REPOSITORY" --clobber

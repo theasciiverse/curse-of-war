@@ -1,3 +1,18 @@
+Play it with Asciiverse
+=======================
+
+With av, the Asciiverse client (https://asciiverse.sh):
+
+    av install curse-of-war
+    av play curse-of-war
+
+Or download the archive for your system from this repository's Releases,
+unpack it and run ./curseofwar (curseofwar.exe on Windows).
+
+The original README follows.
+
+------------------------------------------------------------------------
+
                                         __                      
            ____                        /  ]                     
           / __ \_ _ ___ ___ ___    __ _| |_  /\      /\___ ___  
